@@ -11,50 +11,48 @@ define('DBSCHEME_PRIMARY_KEY',16); // if multi-column: only set for first column
 require_once('../shared-lib/formatAs.php');
 require_once('../shared-lib/dbQuery.php');
 
+function &dbScheme_useOrInit(&$H,$k,$v0) {
+  if (!isset($H[$k])) $H[$k] = $v0;
+  return $H[$k];
+}
+
 /*
  * returns a json structure with a list of tables and their fields
  */
 function dbScheme_parse($dbScheme) {
-
-  function &useOrInit(&$H,$k,$v0) {
-    if (!isset($H[$k])) $H[$k] = $v0;
-    return $H[$k];
-  }
-  
   // FIRST PASS
   // parse the field definitions of the dbScheme tables
   $dbParsed = $dbScheme['tables'];
   $globalFieldNames = @$dbScheme['fieldNames'];
   foreach ($dbParsed as $tName=>&$tSpec) {
-    $fields =& useOrInit($tSpec,'fields',array());
-    $fieldFlags =& useOrInit($tSpec,'fieldFlags',array());
-    $fieldNames =& useOrInit($tSpec,'fieldNames',array());
-    $indices =& useOrInit($tSpec,'indices',array());
-    $indexFlags =& useOrInit($tSpec,'indexFlags',array());
-    $outLinks =& useOrInit($tSpec,'outLinks',array());
-    $inLinks =& useOrInit($tSpec,'inLinks',array());
+    $fields =& dbScheme_useOrInit($tSpec,'fields',array());
+    $fieldFlags =& dbScheme_useOrInit($tSpec,'fieldFlags',array());
+    $fieldNames =& dbScheme_useOrInit($tSpec,'fieldNames',array());
+    $indices =& dbScheme_useOrInit($tSpec,'indices',array());
+    $indexFlags =& dbScheme_useOrInit($tSpec,'indexFlags',array());
+    $outLinks =& dbScheme_useOrInit($tSpec,'outLinks',array());
+    $inLinks =& dbScheme_useOrInit($tSpec,'inLinks',array());
     $primary = array();
     // parse the table fields
     foreach ($fields as $f=>&$fDef) {
       $fFlag = &$fieldFlags[$f];
       $fFlag = 0;
+      // * means NOT NULL
+      if (substr($fDef,0,1)=='*') {
+        $fDef = substr($fDef,1);
+        $fFlag |= DBSCHEME_NOTNULL;
+      }
       // ! means primary key
       if (substr($fDef,0,1)=='!') {
         $primary[] = $f;
         $fDef = substr($fDef,1); // remove the ! prefix
-        $fFlag |= DBSCHEME_PRIMARY_KEY;
+        $fFlag |= (DBSCHEME_PRIMARY_KEY | DBSCHEME_NOTNULL);
       }
       // # means auto-incrementing primary key
       if (substr($fDef,0,1)=='#') {
         $primary[] = $f;
         $fDef = substr($fDef,1); // remove the # prefix
-        $fFlag |= DBSCHEME_PRIMARY_KEY;
-        $fFlag |= DBSCHEME_AUTO_INCREMENT;
-      }
-      // * means NOT NULL
-      if (substr($fDef,0,1)=='*') {
-        $fDef = substr($fDef,1);
-        $fFlag |= DBSCHEME_NOTNULL;
+        $fFlag |= (DBSCHEME_PRIMARY_KEY | DBSCHEME_AUTO_INCREMENT | DBSCHEME_NOTNULL);
       }
       // + means UNSIGNED
       if (substr($fDef,0,1)=='+') {
@@ -95,54 +93,85 @@ function dbScheme_parse($dbScheme) {
       // The primary key is specified as an index with the key 'primary'
       if ($numPrimary>0) formatAs_error('Primary key doubly defined in table '.$tName);
     } else {
-      if ($numPrimary == 0) {
-        // No primary key is specified, so create a field 'ID' that acts as an auto-incrementing primary key
-        $primary[] = 'ID';
-        if (!isset($fields['ID'])) {
-          $fields['ID'] = 'int';
-          $fFlag =& useOrInit($fieldFlags,'ID',0);
-          $fFlag |= DBSCHEME_NOTNULL;
-          $fFlag |= DBSCHEME_AUTO_INCREMENT;
-        }
-      }
+      if ($numPrimary == 0) formatAs_error('No primary key specified for table '.$tName.'<p>'.$tSpec); 
       $indices['primary'] = $primary;
     }
   }
+
   // SECOND PASS
   // parse foreign key constraints
   foreach ($dbParsed as $tName=>&$tSpec) {
+    $complexLinks =& dbScheme_useOrInit($tSpec,'complexLinks',array());
+    $altFormat =& dbScheme_useOrInit($tSpec,'altFormat',array());
+    $altFields =& dbScheme_useOrInit($tSpec,'altFields',array());
+    $altLinks =& dbScheme_useOrInit($tSpec,'altLinks',array());
     $fields =& $tSpec['fields'];
     $outLinks =& $tSpec['outLinks'];
-    // outLink has format toTable.toField1,$toField2,$toField3,...
+    // outLink has format "toTable1.toField1,toField2,toField3,..."
     foreach ($outLinks as $f=>$outLink) {
-      $fromFields = explode(',',$f); // array(main,sub)
+      $fromFields = explode(',',$f); // $f is a string; for composite keys the fromFields are comma-separated
       $dotPos = strpos($outLink,'.');
+      $isComplex = FALSE;
       if ($dotPos === FALSE) {
-        $toTable = $outLink;
+        $toTable = $outLink;        
         $toFields = $dbParsed[$toTable]['indices']['primary'];
+        if (count($toFields)>1) $isComplex = TRUE;
       } else {
         $toTable = substr($outLink,0,$dotPos);
-        $toFields = explode(',',substr($outLink,$dotPos+1)); // array(main,sub)
+        $toFields = explode(',',substr($outLink,$dotPos+1)); // for composite keys the toFields are comma-separated
       }
-      $lastField = count($fromFields)-1;
-      for ($i=0; $i<=$lastField; $i++) {
-        $from = $fromFields[$i];
-        $to = @$toFields[$i];
-        if (!isset($to)) formatAs_error('Error in multi-column foreign key "'.$tName.'.'.$f.'" : "'.$outLink.'"');
-        $prevFrom = ($i>0 ? $fromFields[$i-1] : NULL);
-        $nextFrom = ($i<$lastField ? $fromFields[$i+1] : NULL);
-        // set outLinks in the format toTable toField prevFromField nextFromField
-        $outLinks[$from] = array($toTable,$to,$prevFrom,$nextFrom);
-        // infer the field types from the toTable
-        $fields[$from] = $dbParsed[$toTable]['fields'][$to];
+      $numFields = count($fromFields);
+      if ($numFields==1 && $toFields[0] == $dbParsed[$toTable]['indices']['primary'][0]) {
+        $fields[$f] = $dbParsed[$toTable]['fields'][$toFields[0]];
+        $outLinks[$f] = $toTable;
+        $dbParsed[$toTable]['inLinks'][$tName.'.'.$f] = $toFields[0];
+      } else {
+        // This code provides *untested* support for complex foreign keys: either composite or 
+        // not referring to a table's primary key.
+        for ($i=0; $i<$numFields; $i++) {
+          $from = $fromFields[$i];
+          $to = @$toFields[$i];
+          if (!isset($to)) formatAs_error('Error in complex foreign key "'.$tName.'.'.$f.'" : "'.$outLink.'"');
+          $prevFrom = ($i>0 ? $fromFields[$i-1] : NULL);
+          $nextFrom = ($i+1<$numFields ? $fromFields[$i+1] : NULL);
+          // set complexLinks in the format toTable toField prevFromField nextFromField
+          $complexLinks[$from] = array($toTable,$to,$prevFrom,$nextFrom);
+          // infer the field types from the toTable
+          $fields[$from] = $dbParsed[$toTable]['fields'][$to];
+        }
+        if ($numFields>0) {
+          // remove the comma-separated field
+          unset($outLinks[$f]);
+          unset($fields[$f]);
+        }
+        // inlinks don't support complex foreign keys yet
       }
-      if ($lastField>0) {
-        unset($outLinks[$f]);
-        unset($fields[$f]);
-      }
-      // inlinks don't support multi-column foreign keys yet
-      $dbParsed[$toTable]['inLinks'][$tName.'.'.$f] = $toFields[0];
     }    
+    // parse the asCell and asItem formatted keys
+    $altKeys = array(isset($tSpec['asCell']) ? $tSpec['asCell'] : NULL);
+    if (isset($tSpec['asItem'])) $altKeys[] = $tSpec['asItem'];
+    $tSpec['altFormat'] = array();
+    foreach ($altKeys as $i=>$aK) {
+      if (!isset($aK)) continue;
+      if (!is_array($aK)) {
+        $fmt = NULL;
+        $aK = array($aK);
+      } else {
+        $fmt = array_shift($aK);
+      }
+      $tSpec['altFormat'][$i] = $fmt;
+      $tSpec['altFields'][$i] = array();
+      $tSpec['altLinks'][$i] = array();
+      foreach ($aK as $f) {
+        $linkLevel = -1;
+        while (substr($f,0,1)=='^') {
+          $f = substr($f,1);
+          $linkLevel++;
+        }
+        if ($linkLevel > -1) $tSpec['altLinks'][$i][$f] = $linkLevel;
+        $tSpec['altFields'][$i][] = $f;
+      }
+    }
   }
   return $dbParsed;
 }
@@ -154,8 +183,9 @@ function dbScheme_parseLayout($dbParsed) {
   $dbLayout = array();
   // estimate field sizes
   foreach ($dbParsed as $tName=>$tSpec) {
+    $tLayout = array();
     $cls = @$tSpec['class'];
-    if ($cls) $dbLayout[$tName]['class'] = $cls;
+    if ($cls) $tLayout['class'] = $cls;
     foreach ($tSpec['fields'] as $fName=>$fDef) {
       $fDef = strtolower($fDef);
       $sz = 0;
@@ -165,8 +195,25 @@ function dbScheme_parseLayout($dbParsed) {
       if ($rPos > $lPos) {
         $sz = substr($fDef,$lPos+1,$rPos-$lPos-1);
       }
-      $dbLayout[$tName][$fName]['fieldSize'] = $sz;
+      if ($sz>0) $tLayout['fields'][$fName]['size'] = $sz;
     }
+    if (isset($tSpec['altLinks'])) {
+      if (isset($tSpec['altLinks'][0])) {
+        $tLayout['asCell'] = array(
+          'format'=>$tSpec['altFormat'][0],
+          'links'=>$tSpec['altLinks'][0],
+          'fields'=>$tSpec['altFields'][0]
+        );
+      }
+      if (isset($tSpec['altLinks'][1])) {
+        $tLayout['asItem'] = array(
+          'format'=>$tSpec['altFormat'][1],
+          'links'=>$tSpec['altLinks'][1],
+          'fields'=>$tSpec['altFields'][1]
+        );
+      }
+    }
+    $dbLayout[$tName] = $tLayout;
   }
   return $dbLayout;
 }
@@ -179,7 +226,7 @@ function dbScheme_detectHierarchy($dbParsed) {
     if (isset($key)) {
       if ($tSpec['fieldFlags'][$key] & DBSCHEME_NOTNULL) {
         $outLink = current($outLinks);
-        $child2parent[$tName] = $outLink[0];
+        $child2parent[$tName] = $outLink;
       }
     }
   }
@@ -205,8 +252,7 @@ function dbScheme_allFields_recursive($dbParsed, &$path2table, $table,$path, $ta
   $path2table[$path] = $table;
 
   // recursively include outLinks (ignore inLinks)
-  foreach ($outLinks as $k=>$outLink) {
-    $toTable = $outLink[0];
+  foreach ($outLinks as $k=>$toTable) {
     if (!isset($tableExclude[$toTable]) || $tableExclude[$toTable]<=$maxRecursion) {
       $link = '^'.$k;
       $allFields[$link] = dbScheme_allFields_recursive($dbParsed, $path2table, $toTable,$path.$link,$tableExclude,$depthLeft-1);
@@ -255,28 +301,29 @@ function dbScheme_allFields($dbParsed, $table, $tableExclude=array()) {
 }
 
 
-function dbScheme_allPaths_recursive($dbParsed, &$path2table, $path,$table, $tableExclude,$depth) {
+function dbScheme_allPaths_recursive($dbParsed, &$path2table,&$path2linkIdx, $path,$table,$linkIdx, $tableExclude,$depth) {
   // TODO: either eliminate allPaths_recursive or allFields_recursive
   $maxDepth = 100;
-  if ($depth>$maxDepth) return;
-  $minDepth = 1;
-  $maxRecursion = 0;
+  if ($depth>$maxDepth || isset($tableExclude[$table])) return;
+  $tableExclude[$table] = TRUE;
 
   $path2table[$path] = $table;
   $allPaths = array();
 
-  // don't use table more than $maxRecursion
-  isset($tableExclude[$table]) ? $tableExclude[$table]++ : $tableExclude[$table] = 1;
-
-  // recursively include outLinks (ignore inLinks)
+  // recursively include outLinks
   $outLinks = $dbParsed[$table]['outLinks'];
-  foreach ($outLinks as $k=>$outLink) {
-    $toTable = $outLink[0];
-    if ($depth<$minDepth || !isset($tableExclude[$toTable]) || $tableExclude[$toTable]<=$maxRecursion) {
-      $allPaths[$k] = dbScheme_allPaths_recursive($dbParsed, $path2table, $path.'^'.$k,$toTable, $tableExclude,$depth+1);
+  if (isset($linkIdx)) {
+    $path2linkIdx[$path] = $linkIdx;
+    $altLinks = $dbParsed[$table]['altLinks'][$linkIdx];
+    foreach ($altLinks as $k=>$toLink) {
+      $toTable = $outLinks[$k];
+      $allPaths[$k] = dbScheme_allPaths_recursive($dbParsed, $path2table,$path2linkIdx, $path.'^'.$k,$toTable,$toLink, $tableExclude,$depth+1);
+    }
+  } else {
+    foreach ($outLinks as $k=>$toTable) {
+      $allPaths[$k] = dbScheme_allPaths_recursive($dbParsed, $path2table,$path2linkIdx, $path.'^'.$k,$toTable,NULL, $tableExclude,$depth+1);
     }
   }
-  
   return $allPaths;
 }
 
@@ -307,12 +354,13 @@ function dbScheme_allPaths_recursive($dbParsed, &$path2table, $path,$table, $tab
    }
  *
  */
-function dbScheme_allPaths($dbParsed, $table, $tableExclude=array()) {
-  $allPaths = dbScheme_allPaths_recursive($dbParsed, $path2table, '',$table, $tableExclude,0);
-  return array($allPaths,$path2table);
+function dbScheme_allPaths($dbParsed, $rootTable, $linkIdx=NULL,$tableExclude=array()) {
+  // if $link is set, it decides which $altKey is used
+  $path2table = array();
+  $path2linkIdx = array();
+  $allPaths = dbScheme_allPaths_recursive($dbParsed, $path2table,$path2linkIdx, '',$rootTable,$linkIdx, $tableExclude,0);
+  return array($allPaths,$path2table,$path2linkIdx);
 }
-
-
 
 function dbScheme_allFieldsChoices_recursive(&$choices, $dbParsed,$allFields,$path2table, $nicePath,$path,$depth) {
   $table = $path2table[$path];
@@ -323,13 +371,14 @@ function dbScheme_allFieldsChoices_recursive(&$choices, $dbParsed,$allFields,$pa
       $fkTable = $path2table[$fkPath];
       $f = substr($k,1);
       $niceName = isset($fieldNames[$f]) ? $fieldNames[$f] : $f;
-      $fkNicePath = (isset($nicePath) ? $nicePath.' &#9668; ' : '').$niceName;
+      $fkNicePath = (isset($nicePath) ? $nicePath.' &#9658; ' : '').$niceName;
       dbScheme_allFieldsChoices_recursive($choices, $dbParsed,$v,$path2table, $fkNicePath,$fkPath,$depth+1);
     } else {
       $table = $path2table[$path];
       $choices[$nicePath][$path.'.'.$v] = $table.'.'.$v;
     }
   }
+  $choices[$nicePath][$path] = '&#9668; vector properties of '.$table;
 }
 
 /*
@@ -358,72 +407,11 @@ function dbScheme_allFieldsChoices_recursive(&$choices, $dbParsed,$allFields,$pa
  * e.g. ^ID_BrainMaps_BrainSiteAcronym.FullName
  */
 function dbScheme_allFieldsChoices($dbParsed,$allFields,$path2table) {
-  $choices = array();
   $T0 = $path2table[''];
+  $choices = array();
   dbScheme_allFieldsChoices_recursive($choices, $dbParsed,$allFields,$path2table, $T0,'',0);
   return $choices;
 }
-
-/*
-Non-scalar fields (based on inLinks) are noy currently supported.
-
-function dbScheme_allNonScalarFields_recursive($dbParsed, &$tCount, $table,$linkPath,$usedTables,$depthLeft) {
-  if ($depthLeft <= 0) return;
-  $allFields = array();
-  $inLinks = $dbParsed[$table]['inLinks'];
-  foreach ($inLinks as $tf=>$k) if (!isset($usedTables[$tf])) {
-    $usedTables[$tf] = TRUE;
-    $dotPos = strpos($tf,'.');
-    $fkTable = ( $dotPos === FALSE ? $tf : substr($tf,0,$dotPos) );
-    $asTable = 'T'.(++$tCount);
-    $link = $k.'::'.$tf;
-    $linkPath .= '|'.$link;
-    $allFields[$link.' AS '.$asTable] = dbScheme_allNonScalarFields_recursive($dbParsed, $tCount,$fkTable,$linkPath,$usedTables,$depthLeft-1);
-  }
-  return $allFields;
-}
-
-function dbScheme_allNonScalarFields($dbParsed, $table,$maxDepth=0) {
-  $usedTables = array();
-  $tCount = 0;
-  $allFields = dbScheme_allNonScalarFields_recursive($dbParsed, $tCount, $table,$table,$usedTables,$maxDepth);
-  return $allFields;
-}
-
-function dbScheme_allNonScalarFieldsChoices(&$choices,&$path2table, $dbParsed,$allFields, $nicePath=NULL,$table=NULL,$asTable=NULL,$depth=0) {
-  foreach ($allFields as $k=>$v) {
-    if (is_array($v)) {
-      // split $k into link and asTable
-      $asPos = strpos($k,' AS ');
-      $link = substr($k,0,$asPos);
-      $asTable = substr($k,$asPos+4);
-      // split $link into key and tf
-      $refPos = strpos($link,'::');
-      if ($refPos === false) {
-        $niceName = $tf = $link;
-      } else {
-        $k = substr($link,0,$refPos);
-        $tf = substr($link,$refPos+1);
-        $dotPos = strrpos($tf,'.');
-        $f = substr($tf,$dotPos+1);
-        $niceName = @$dbParsed[$table]['fieldNames'][$f];
-      }
-
-      $linkPath = @$path2table[$asTable];
-      $nextPath = (isset($linkPath) ? $linkPath.'.' :'').$link;
-      $path2table[$fkAsTable] = $nextPath;
-      $nextNicePath = (isset($nicePath) ? $nicePath.' &#9668; ' : '').$niceName;
-      dbScheme_allFieldsChoices($choices,$path2table, $dbParsed,$v, $nextNicePath,$fkTable,$fkAsTable,$depth+1);
-    } else {
-      if (substr($v,0,1)=='[') {
-        $choices[$asTable.' = '.$nicePath][$asTable.$v] = '[non-scalar properties of '.$table.']';
-      } else {
-        $choices[$asTable.' = '.$nicePath][$asTable.'.'.$v] = $table.'.'.$v;
-      }
-    }
-  }
-}
-*/
 
 // Returns boolean hash array that indicates whether a table has multiple inLinks (in a given query)
 // Status: deprecated
@@ -491,6 +479,44 @@ function dbScheme_allPathsQuery_joinedTables($dbParsed,$allPaths,$path2table, $i
   return array($joinedTables,$path2as);
 }
 
+function dbScheme_addAlternateKeys_recursive($dbParsed, &$result, $table,$linkIdx,$depth) {
+  if ($depth >= 10) return;
+  $tDef = $dbParsed[$table];
+  $res = &$result['tables'][$table];
+
+  if (isset($tDef['altFields'][$linkIdx])) {
+    $outLinks = $tDef['outLinks'];
+    $format = $tDef['altFormat'][$linkIdx];
+    $altLinks = $tDef['altLinks'][$linkIdx];
+    foreach ($altLinks as $f=>$toLink) {
+      $toTable = $res['links'][$f];
+      dbScheme_addAlternateKeys_recursive($dbParsed, $result, $toTable,$toLink,$depth+1);
+    }
+    $f2i = array_flip($res['fields']);
+    $args = array();
+    $fields = $tDef['altFields'][$linkIdx];
+    foreach ($res['data'] as $k=>$row) {
+      $args = array();
+      foreach ($fields as $f) {
+        $i = $f2i[$f];
+        $args[] = isset($outLinks[$f]) ? $result['tables'][$outLinks[$f]]['altKeys'][$row[$i]] : $row[$i];
+      }
+      $res['altKeys'][$k] = isset($format) ? vsprintf($format,$args) : implode(',',$args);
+    }
+  } else {
+    // use primary key as altKey
+    foreach ($res['data'] as $k=>$row) {
+      $res['altKeys'][$k] = $k;
+    }    
+  }
+}
+
+function dbScheme_addAlternateKeys($dbParsed, &$result,$linkIdx) {
+  $table = $result['resultTable'];
+  dbScheme_addAlternateKeys_recursive($dbParsed, $result, $table,$linkIdx,0); 
+  return $result['tables'][$table]['altKeys'];
+}
+
 /* restrict choices such that they will yield at least one search result */
 function dbScheme_allFieldsChoices_where($dbParsed,$T0,$linkPath) {
   $sql = '';
@@ -501,7 +527,7 @@ function dbScheme_allFieldsChoices_where($dbParsed,$T0,$linkPath) {
   // start with the base table
   $tableChain[] = $table = $T0;
   foreach ($linkPath as $lp) {
-    $tableChain[] = $table = $dbParsed[$table]['outLinks'][$lp][0];
+    $tableChain[] = $table = $dbParsed[$table]['outLinks'][$lp];
   }
   for ($i=count($linkPath)-1; $i>=0; $i--) {
     $table = $tableChain[$i];

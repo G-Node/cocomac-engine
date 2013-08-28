@@ -1,0 +1,9 @@
+{
+  "tables":{
+    "Persons": {
+      "fields" : {
+        "ID": "#int(11)"
+      }
+    }
+  }
+}

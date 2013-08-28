@@ -1,0 +1,79 @@
+<html>
+<h1>CoCoMac Data Mining Engine (CoCoMine) documentation</h1>
+The CoCoMac Data Mining Engine is an open source, PHP based software package to set up, search, browse, format and contribute data to a relational database. Although developed with a particular application in mind (CoCoMac.g-node.org), the package works on any database that meets these requirements:
+<ul>
+<li>The database must use the MySQL database system. The search engine uses temporary tables that may work differently in other SQL flavours.
+<li>Foreign keys must always point to another table's primary key, and they may not point to composite primary keys (consisting of multiple fields). This is not a fundamental limitation, but full composite key support will take considerable effort.
+<li>Adding and editing data is an important feature but not yet finalized. At present, CoCoMine is best used on existing databases.
+</ul>
+CoCoMine provides default 'views' to tables and table-rows. With custom Javascript code, it is possible to alter the default view and to create new views.
+<p>
+Central to CoCoMine is a database definition file (DDF), which contains the specification of all tables, fields and relations in the database. The DDF can be obtained in two ways:
+<ol>
+<li>For a new database project, it is most convenient to first manually create the DDF, and then generate an empty database from it.
+<li>For an existing database, the DDF can automatically be generated. It often requires an additional round of manual adjustments because, for example, many databases do not explicitly store their foreign key relations.
+</ol>
+Besides the DDF, a configuration file is needed that contains:
+<ul>
+<li>Path to the DDF (file system path).
+<li>MySQL Database name
+<li>MySQL Database user and password for custom SQL statements (protected against SQL injection). This user should only have SELECT permission. Leave empty to disable custom SQL.
+<li>
+MySQL Database user and password for searching and browsing. For efficient searching, it has turned out to be unavoidable to work with temporary tables. For that reason, the user should have SELECT, CREATE, CREATE TEMPORARY TABLES, DELETE, DROP, INSERT, SELECT, UPDATE permissions. The search/browse engine will only give the user read access to the tables and fields as defined in the DDF.
+<li>MySQL Database user and password for editing. Under development, leave empty for now.
+</ul>
+
+<h2>Database Definition File (DDF) specification</h2>
+The DDF is a json-formatted file that specifies the tables, fields and relations in your database. In addition, you can specify basic customizations to replace numeric keys in the database with human readable alternatives. You can use the DDF to hide part of your database: only tables or fields that you omit will not show up in the search results (Note: if part of your database is private, then also disable the 'custom SQL' service).
+<p>
+The DDF template in its most basic form is:
+<pre>
+{ 
+  "tables": {
+    "table_1": {
+      "fields": {
+        "field_1": "fielddef_1_1",
+        "field_2": "fielddef_1_2",
+        etc, etc...
+      }
+    }
+    "table_2": {
+      "fields": {
+        "field_1": "fielddef_2_1",
+        "field_2": "fielddef_2_2",
+        etc, etc...
+      }
+    }
+    etc, etc...
+  }
+}
+</pre>
+In the template, replace table_1, field_1 etc. with actual table and field names.
+
+<p/>For <tt>fielddef</tt>, the following rules apply:
+<li>The order of these instructions matters! Follow the rules in the order below.
+<li>For a field that represents a <b>foreign key</b>, use <tt>^</tt> (caret) followed by the table name. Forexample, field_2 in table_2 could be <tt>^table_1</tt>. The field of table_1 that this foreign key points to is automatically chosen to be the primary key of table_1. The data type is automatically copied from that field. You may explicitly specify the foreign field using a dot notation: <tt>^table_1.field_1</tt>.
+<li>For fields that are <b>not</b> foreign keys, simply specify the MySQL-compatible data type and length, such as <tt>varchar(256)</tt> (for string types, the number specifies the maximum length). See the mysql <a href="http://dev.mysql.com/doc/refman/5.0/en/data-type-overview.html">documentation</a>.
+<li>For an unsigned numeric field, prepend the field with a <tt>+</tt> (plus) to indicate that it is unsigned. Example: <tt>+int(10)</tt> (for integers, the number specifies the display width)
+<li>For a field that represents an auto-incrementing primary key, prepend it with a <tt>#</tt> (hash). The data type must be one of the available integer types.
+<li>For fields that are (part of) the primary key, prepend the field with a <tt>!</tt> (exclamation mark).
+<li>For any field that should not accept a NULL value (i.e. is mandatory), prepend it with a <tt>*</tt> (asterisk)
+</ul>
+
+<h3>Natural, surrogate, and alternative keys</h3>
+In most circumstances it is best to indicate table rows using a surrogate key, typically an auto-incrementing integer. See this <a href="http://www.agiledata.org/essays/keys.html">discussion</a> of this topic. But surrogate keys are inconvenient when searching for and displaying data, since they have no meaning to a human. For such purposes, the DDF supports two additional items for each table: "asCell" and "asItem". The asCell field specifies how to summarize a table when it is to be displayed in a tiny space (a table cell). Similarly, the asItem field is used when displaying the table as a single item in a list. If asItem is missing, asCell is used instead. If asCell is missing, the primary key is displayed. In the DDF template, "asCell" is added to the table definition as follows:
+<pre>
+    "table_1": {
+      "fields": {
+        "field_1": "fielddef_1_1",
+        "field_2": "fielddef_1_2",
+        etc, etc...
+      }
+      "asCell": [
+        "format", "field_1", "^field2", etc, etc...
+      ]
+    }
+</pre>
+where "asCell" points to an array which starts with a format string that should adhere to the <a href="https://github.com/alexei/sprintf.js">printf</a> standard, followed by a list of fields. If a field represents a foreign key, then it may be preceded by a <tt>^</tt> (caret) to have the asCell-representation (<tt>^^</tt> for the asItem-representation) of the referenced table row recursively inserted. The format string of asCell/asItem should not be used to include HTML markup. In the case that sprintf is not flexible enough, you can also define custom asCell and asItem functions in a separate javascript file.
+<p/>
+</html>
